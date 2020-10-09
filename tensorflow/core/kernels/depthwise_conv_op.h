@@ -13,11 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_KERNELS_DEPTHWISE_CONV_OP_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_KERNELS_DEPTHWISE_CONV_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_DEPTHWISE_CONV_OP_H_
+#define TENSORFLOW_CORE_KERNELS_DEPTHWISE_CONV_OP_H_
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/util/tensor_format.h"
 
 namespace tensorflow {
 
@@ -31,8 +32,8 @@ struct DepthwiseArgs {
   int filter_cols;
   int depth_multiplier;
   int stride;
-  int pad_rows;
-  int pad_cols;
+  int pad_rows;  // Amount of padding to the top of the input
+  int pad_cols;  // Amount of padding to the left of the input
 
   // Output layer dimensions
   int out_rows;
@@ -54,6 +55,53 @@ struct DepthwiseArgs {
         out_cols(0),
         out_depth(0) {}
 };
+
+// Forward declaration.
+class OpKernelContext;
+
+template <typename Device, typename T>
+struct LaunchDepthwiseConvOp {
+  void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
+                  const T* input, const T* filter, T* output,
+                  TensorFormat data_format);
+};
+
+template <typename Device, typename T>
+struct LaunchDepthwiseConvBackpropInputOp {
+  void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
+                  const T* out_backprop, const T* filter, T* in_backprop,
+                  TensorFormat data_format);
+};
+
+template <typename Device, typename T>
+struct LaunchDepthwiseConvBackpropFilterOp {
+  void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
+                  const T* out_backprop, const T* input, T* filter_backprop,
+                  TensorFormat data_format);
+};
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+template <typename T>
+struct LaunchDepthwiseConvOp<Eigen::GpuDevice, T> {
+  void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
+                  const T* input, const T* filter, T* output,
+                  TensorFormat data_format);
+};
+
+template <typename T>
+struct LaunchDepthwiseConvBackpropInputOp<Eigen::GpuDevice, T> {
+  void operator()(class OpKernelContext* ctx, const DepthwiseArgs& args,
+                  const T* out_backprop, const T* filter, T* in_backprop,
+                  TensorFormat data_format);
+};
+
+template <typename T>
+struct LaunchDepthwiseConvBackpropFilterOp<Eigen::GpuDevice, T> {
+  void operator()(class OpKernelContext* ctx, const DepthwiseArgs& args,
+                  const T* out_backprop, const T* input, T* filter_backprop,
+                  TensorFormat data_format);
+};
+#endif
 
 }  // namespace tensorflow
 
@@ -110,7 +158,8 @@ struct DepthwiseFilterPadOp {
       }
       // Pad the remainder of output to vector-register boundary.
       for (int64 j = 0; j < pad_size; ++j) {
-        padded_filter[output_base + vectorized_size + scalar_size + j] = 0;
+        padded_filter[output_base + vectorized_size + scalar_size + j] =
+            static_cast<T>(0);
       }
     }
   }
@@ -118,7 +167,7 @@ struct DepthwiseFilterPadOp {
 
 // Copies data from local region in 'input' specified by 'out_r' and 'out_'c'
 // to 'input_buffer'. The copied data is replicated by factor
-// 'args.depth_mulitplier', and padded to vector register-width boundaries so
+// 'args.depth_multiplier', and padded to vector register-width boundaries so
 // that it is aligned for efficient traversal and vector multiply-add by the
 // depthwise kernel.
 //
@@ -218,7 +267,7 @@ struct DepthwiseInputCopyOp {
 
           // Pad the remainder of the output to vector register boundary.
           for (int64 d = 0; d < output_pad_size; ++d) {
-            in_buf[d] = 0;
+            in_buf[d] = static_cast<T>(0);
           }
           in_buf += output_pad_size;
 
@@ -235,4 +284,4 @@ struct DepthwiseInputCopyOp {
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_KERNELS_DEPTHWISE_CONV_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_DEPTHWISE_CONV_OP_H_

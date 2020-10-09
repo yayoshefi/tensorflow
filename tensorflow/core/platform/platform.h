@@ -19,7 +19,7 @@ limitations under the License.
 // Set one PLATFORM_* macro and set IS_MOBILE_PLATFORM if the platform is for
 // mobile.
 
-#if !defined(PLATFORM_POSIX) && !defined(PLATFORM_GOOGLE) && \
+#if !defined(PLATFORM_POSIX) && !defined(PLATFORM_GOOGLE) &&                 \
     !defined(PLATFORM_POSIX_ANDROID) && !defined(PLATFORM_GOOGLE_ANDROID) && \
     !defined(PLATFORM_WINDOWS)
 
@@ -29,22 +29,22 @@ limitations under the License.
 #define IS_MOBILE_PLATFORM
 
 #elif defined(__APPLE__)
-#define PLATFORM_POSIX
 #include "TargetConditionals.h"
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_IPHONE_SIMULATOR || TARGET_OS_IPHONE
+#define PLATFORM_POSIX_IOS
 #define IS_MOBILE_PLATFORM
-#elif TARGET_OS_IPHONE
-#define IS_MOBILE_PLATFORM
+#else
+// If no platform specified, use:
+#define PLATFORM_POSIX
 #endif
 
 #elif defined(_WIN32)
 #define PLATFORM_WINDOWS
 
-#elif defined(__arm__)
+#elif defined(__EMSCRIPTEN__)
+#define PLATFORM_PORTABLE_GOOGLE
 #define PLATFORM_POSIX
-
-// Since there's no macro for the Raspberry Pi, assume we're on a mobile
-// platform if we're compiling for the ARM CPU.
+// EMSCRIPTEN builds are considered "mobile" for the sake of portability.
 #define IS_MOBILE_PLATFORM
 
 #else
@@ -52,6 +52,13 @@ limitations under the License.
 #define PLATFORM_POSIX
 
 #endif
+#endif
+
+// Look for both gcc/clang and Visual Studio macros indicating we're compiling
+// for an x86 device.
+#if defined(__x86_64__) || defined(__amd64__) || defined(_M_IX86) || \
+    defined(_M_X64)
+#define PLATFORM_IS_X86
 #endif
 
 #endif  // TENSORFLOW_PLATFORM_PLATFORM_DEFINE_H_

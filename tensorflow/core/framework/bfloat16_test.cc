@@ -15,16 +15,13 @@ limitations under the License.
 
 #include "tensorflow/core/framework/bfloat16.h"
 
+#include "absl/base/casts.h"
+#include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 
 namespace tensorflow {
 namespace {
-
-TEST(Bfloat16Test, Simple) {
-  bfloat16 a(12);
-  EXPECT_EQ(12, a.value);
-}
 
 TEST(Bfloat16Test, Conversion) {
   float a[100];
@@ -60,6 +57,27 @@ static void BM_FloatToBFloat16(int iters) {
   delete[] out;
 }
 BENCHMARK(BM_FloatToBFloat16);
+
+static void BM_RoundFloatToBFloat16(int iters) {
+  testing::StopTiming();
+  static const int N = 32 << 20;
+  const int64 tot = static_cast<int64>(iters) * N;
+  testing::ItemsProcessed(tot);
+  testing::BytesProcessed(tot * (sizeof(float) + sizeof(bfloat16)));
+
+  float* inp = new float[N];
+  bfloat16* out = new bfloat16[N];
+
+  testing::StartTiming();
+  while (iters--) {
+    RoundFloatToBFloat16(inp, out, N);
+    tensorflow::testing::DoNotOptimize(inp);
+    tensorflow::testing::DoNotOptimize(out);
+  }
+  delete[] inp;
+  delete[] out;
+}
+BENCHMARK(BM_RoundFloatToBFloat16);
 
 static void BM_BFloat16ToFloat(int iters) {
   testing::StopTiming();

@@ -18,13 +18,14 @@ limitations under the License.
 namespace tensorflow {
 REGISTER5(UnaryOp, CPU, "Rsqrt", functor::rsqrt, float, Eigen::half, double,
           complex64, complex128);
-#if GOOGLE_CUDA
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 REGISTER3(UnaryOp, GPU, "Rsqrt", functor::rsqrt, float, Eigen::half, double);
 #endif
 
 REGISTER5(SimpleBinaryOp, CPU, "RsqrtGrad", functor::rsqrt_grad, float,
           Eigen::half, double, complex64, complex128);
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 REGISTER3(SimpleBinaryOp, GPU, "RsqrtGrad", functor::rsqrt_grad, float,
           Eigen::half, double);
 #endif

@@ -20,15 +20,16 @@ limitations under the License.
 
 #include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/cc/training/coordinator.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/lib/core/error_codes.pb.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/protobuf/queue_runner.pb.h"
 #include "tensorflow/core/public/session.h"
 
@@ -43,6 +44,7 @@ using ops::FIFOQueue;
 using ops::QueueClose;
 using ops::QueueDequeue;
 using ops::QueueEnqueue;
+using ops::RandomNormal;
 using ops::Square;
 using ops::Variable;
 
@@ -83,7 +85,7 @@ QueueRunnerDef BuildQueueRunnerDef(
     const std::string& close_op, const std::string& cancel_op,
     const std::vector<Code>& queue_closed_error_codes) {
   QueueRunnerDef queue_runner_def;
-  *queue_runner_def.mutable_queue_name() = kQueueName;
+  *queue_runner_def.mutable_queue_name() = queue_name;
   for (const std::string& enqueue_op : enqueue_ops) {
     *queue_runner_def.mutable_enqueue_op_name()->Add() = enqueue_op;
   }
@@ -111,11 +113,12 @@ TEST(QueueRunnerTest, BasicTest) {
   auto session = BuildSessionAndInitVariable(graph_def);
 
   QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
-      kQueueName, {kCountUpToOpName, kCountUpToOpName}, kSquareOpName, "", {});
+      kQueueName, {kCountUpToOpName}, kSquareOpName, "", {});
 
-  QueueRunner qr(queue_runner_def);
-  qr.Start(session.get());
-  TF_EXPECT_OK(qr.Join());
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_CHECK_OK(qr->Start(session.get()));
+  TF_EXPECT_OK(qr->Join());
 
   std::vector<Tensor> outputs;
   TF_EXPECT_OK(session->Run({}, {kSquareOpName}, {}, &outputs));
@@ -127,13 +130,15 @@ TEST(QueueRunnerTest, QueueClosedCode) {
   GraphDef graph_def = BuildSimpleGraph();
   auto session = BuildSessionAndInitVariable(graph_def);
 
-  QueueRunnerDef queue_runner_def =
-      BuildQueueRunnerDef(kQueueName, {kCountUpToOpName}, kSquareOpName, "",
-                          {Code::OUT_OF_RANGE, Code::CANCELLED});
+  // Start two queues so that multiple threads are in Run.
+  QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
+      kQueueName, {kCountUpToOpName, kCountUpToOpName}, kSquareOpName, "",
+      {Code::OUT_OF_RANGE, Code::CANCELLED});
 
-  QueueRunner qr(queue_runner_def);
-  qr.Start(session.get());
-  TF_EXPECT_OK(qr.Join());
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_EXPECT_OK(qr->Start(session.get()));
+  TF_EXPECT_OK(qr->Join());
 
   std::vector<Tensor> outputs;
   TF_EXPECT_OK(session->Run({}, {kSquareOpName}, {}, &outputs));
@@ -141,16 +146,32 @@ TEST(QueueRunnerTest, QueueClosedCode) {
   EXPECT_EQ(square_value, 100);
 }
 
-TEST(QueueRunnerDef, CatchErrorInJoin) {
+TEST(QueueRunnerTest, QueueCloseFails) {
+  GraphDef graph_def = BuildSimpleGraph();
+  auto session = BuildSessionAndInitVariable(graph_def);
+
+  QueueRunnerDef queue_runner_def =
+      BuildQueueRunnerDef(kQueueName, {kCountUpToOpName}, kIllegalOpName1, "",
+                          {Code::OUT_OF_RANGE});
+
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_EXPECT_OK(qr->Start(session.get()));
+  auto status = qr->Join();
+  EXPECT_EQ(status.code(), Code::NOT_FOUND) << status;
+}
+
+TEST(QueueRunnerTest, CatchErrorInJoin) {
   GraphDef graph_def = BuildSimpleGraph();
   auto session = BuildSessionAndInitVariable(graph_def);
 
   QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
       kQueueName, {kIllegalOpName1, kIllegalOpName2}, kCountUpToOpName, "", {});
 
-  QueueRunner qr(queue_runner_def);
-  qr.Start(session.get());
-  EXPECT_EQ(qr.Join().code(), Code::NOT_FOUND);
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_EXPECT_OK(qr->Start(session.get()));
+  EXPECT_EQ(qr->Join().code(), Code::NOT_FOUND);
 }
 
 GraphDef BuildDoubleQueueGraph() {
@@ -161,7 +182,8 @@ GraphDef BuildDoubleQueueGraph() {
   auto close0 = QueueClose(root.WithOpName(kCloseOp0), q0);
   auto cancel0 = QueueClose(root.WithOpName(kCancelOp0), q0,
                             QueueClose::CancelPendingEnqueues(true));
-  auto q1 = FIFOQueue(root.WithOpName(kQueueName1), {DataType::DT_INT32});
+  auto q1 = FIFOQueue(root.WithOpName(kQueueName1), {DataType::DT_INT32},
+                      FIFOQueue::Capacity(3));
   auto dequeue0 =
       QueueDequeue(root.WithOpName(kDequeueOp0), q0, {DataType::DT_INT32});
   auto enqueue1 = QueueEnqueue(root.WithOpName(kEnqueueOp1), q1, {dequeue0[0]});
@@ -185,16 +207,16 @@ TEST(QueueRunnerTest, RealEnqueueDequeue) {
 
   QueueRunnerDef queue_runner_def =
       BuildQueueRunnerDef(kQueueName, {kEnqueueOp1}, kCloseOp1, "", {});
-  QueueRunner qr;
-  qr.Init(queue_runner_def);
-  TF_CHECK_OK(qr.Start(session.get()));
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_CHECK_OK(qr->Start(session.get()));
 
   TF_EXPECT_OK(session->Run({}, {}, {kEnqueueOp0}, nullptr));
   TF_EXPECT_OK(session->Run({}, {}, {kEnqueueOp0}, nullptr));
   // Closing queue 0 would also close the queue runner.
   TF_EXPECT_OK(session->Run({}, {}, {kCloseOp0}, nullptr));
 
-  TF_EXPECT_OK(qr.Join());
+  TF_EXPECT_OK(qr->Join());
   std::vector<Tensor> dq1;
   TF_EXPECT_OK(session->Run({}, {kDequeueOp1}, {}, &dq1));
   EXPECT_EQ(*dq1[0].scalar<int>().data(), 10);
@@ -222,9 +244,9 @@ TEST(QueueRunnerTest, SessionCloseCancelPendingEnqueue) {
 
   QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
       kQueueName1, {kEnqueueOp1}, kCloseOp1, kCancelOp1, {});
-  QueueRunner qr;
-  qr.Init(queue_runner_def);
-  TF_CHECK_OK(qr.Start(session.get()));
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_CHECK_OK(qr->Start(session.get()));
 
   TF_EXPECT_OK(session->Run({}, {}, {kEnqueueOp0}, nullptr));
 
@@ -237,7 +259,7 @@ TEST(QueueRunnerTest, SessionCloseCancelPendingEnqueue) {
   bool join_succeeded = false;
   Notification join_done;
   Env::Default()->SchedClosure(
-      std::bind(&JoinThread, &qr, &join_succeeded, &join_done));
+      std::bind(&JoinThread, qr.get(), &join_succeeded, &join_done));
 
   Env::Default()->SleepForMicroseconds(10000000);
   EXPECT_EQ(join_succeeded, false);
@@ -249,33 +271,34 @@ TEST(QueueRunnerTest, SessionCloseCancelPendingEnqueue) {
   EXPECT_EQ(join_succeeded, true);
 }
 
-TEST(QueueRunnerTest, Stop) {
-  auto graph_def = BuildDoubleQueueGraph();
+TEST(QueueRunnerTest, EmptyEnqueueOps) {
+  QueueRunnerDef queue_runner_def =
+      BuildQueueRunnerDef(kQueueName, {}, kCountUpToOpName, "", {});
 
+  std::unique_ptr<QueueRunner> qr;
+  EXPECT_EQ(QueueRunner::New(queue_runner_def, &qr).code(),
+            Code::INVALID_ARGUMENT);
+}
+
+TEST(QueueRunnerTest, StartTimeout) {
+  GraphDef graph_def = BuildDoubleQueueGraph();
   SessionOptions options;
   std::unique_ptr<Session> session(NewSession(options));
   TF_CHECK_OK(session->Create(graph_def));
 
   QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
       kQueueName1, {kEnqueueOp1}, kCloseOp1, kCancelOp1, {});
-  QueueRunner qr;
-  qr.Init(queue_runner_def);
-  TF_CHECK_OK(qr.Start(session.get()));
 
-  TF_EXPECT_OK(qr.Stop(session.get()));
-
-  TF_EXPECT_OK(session->Run({}, {}, {kEnqueueOp0}, nullptr));
-
-  EXPECT_EQ(session->Run({}, {kDequeueOp1}, {}, nullptr).code(),
-            Code::OUT_OF_RANGE);
-
-  // qr is already stopped
-  TF_EXPECT_OK(qr.Join());
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  // This will timeout since queue0 is not fed and queue1 is fetching data from
+  // queue0.
+  EXPECT_EQ(qr->Start(session.get(), 1).code(), Code::DEADLINE_EXCEEDED);
+  TF_EXPECT_OK(session->Close());
 }
 
-TEST(QueueRunnerTest, StopTwoQueues) {
+TEST(QueueRunnerTest, TestCoordinatorStop) {
   auto graph_def = BuildDoubleQueueGraph();
-
   SessionOptions options;
   std::unique_ptr<Session> session(NewSession(options));
   TF_CHECK_OK(session->Create(graph_def));
@@ -286,42 +309,101 @@ TEST(QueueRunnerTest, StopTwoQueues) {
   QueueRunnerDef queue_runner1 =
       BuildQueueRunnerDef(kQueueName1, {kEnqueueOp1}, kCloseOp1, kCancelOp1,
                           {Code::OUT_OF_RANGE, Code::CANCELLED});
-  QueueRunner qr0;
-  qr0.Init(queue_runner0);
-  TF_CHECK_OK(qr0.Start(session.get()));
-  QueueRunner qr1;
-  qr1.Init(queue_runner1);
-  TF_CHECK_OK(qr1.Start(session.get()));
+
+  Coordinator coord;
+  std::unique_ptr<QueueRunner> qr0;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner0, &coord, &qr0));
+  TF_CHECK_OK(qr0->Start(session.get()));
+  std::unique_ptr<QueueRunner> qr1;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner1, &coord, &qr1));
+  TF_CHECK_OK(qr1->Start(session.get()));
+
+  TF_EXPECT_OK(coord.RegisterRunner(std::move(qr0)));
+  TF_EXPECT_OK(coord.RegisterRunner(std::move(qr1)));
 
   std::vector<Tensor> dq;
   TF_EXPECT_OK(session->Run({}, {kDequeueOp1}, {}, &dq));
   EXPECT_EQ(*dq[0].scalar<int>().data(), 10);
 
-  TF_EXPECT_OK(qr0.Stop(session.get()));
-  TF_EXPECT_OK(qr1.Stop(session.get()));
-
-  TF_EXPECT_OK(qr0.Join());
-  TF_EXPECT_OK(qr1.Join());
+  TF_EXPECT_OK(coord.RequestStop());
+  TF_EXPECT_OK(coord.Join());
 }
 
-TEST(QueueRunnerTest, EmptyEnqueueOps) {
-  QueueRunnerDef queue_runner_def =
-      BuildQueueRunnerDef(kQueueName, {}, kCountUpToOpName, "", {});
-
-  QueueRunner qr;
-  EXPECT_EQ(qr.Init(queue_runner_def).code(), Code::INVALID_ARGUMENT);
-}
-
-TEST(QueueRunnerTest, InitAfterStart) {
+TEST(QueueRunnerTest, CallbackCalledOnError) {
   GraphDef graph_def = BuildSimpleGraph();
   auto session = BuildSessionAndInitVariable(graph_def);
-  QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
-      kQueueName, {kCountUpToOpName}, kCountUpToOpName, "", {});
 
-  QueueRunner qr;
-  TF_EXPECT_OK(qr.Init(queue_runner_def));
-  TF_EXPECT_OK(qr.Start(session.get()));
-  EXPECT_EQ(qr.Init(queue_runner_def).code(), Code::ALREADY_EXISTS);
+  QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
+      kQueueName, {kIllegalOpName1, kIllegalOpName2}, kCountUpToOpName, "", {});
+
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  bool error_caught = false;
+  qr->AddErrorCallback([&error_caught](const Status&) { error_caught = true; });
+  TF_EXPECT_OK(qr->Start(session.get()));
+  EXPECT_FALSE(qr->Join().ok());
+  EXPECT_TRUE(error_caught);
+}
+
+TEST(QueueRunnerTest, RunMetaDataTest) {
+  Scope root = Scope::NewRootScope();
+  auto q0 = FIFOQueue(root.WithOpName(kQueueName), {DataType::DT_FLOAT});
+  Output rnd = RandomNormal(root.WithOpName("rnd"), {1, 1}, DataType::DT_FLOAT);
+  Output square = Square(root.WithOpName(kSquareOpName), rnd);
+  auto enqueue0 = QueueEnqueue(root.WithOpName(kEnqueueOp0), q0, {square});
+  auto close0 = QueueClose(root.WithOpName(kCloseOp0), q0);
+  auto cancel0 = QueueClose(root.WithOpName(kCancelOp0), q0,
+                            QueueClose::CancelPendingEnqueues(true));
+  auto dequeue0 =
+      QueueDequeue(root.WithOpName(kDequeueOp0), q0, {DataType::DT_FLOAT});
+
+  GraphDef graph_def;
+  TF_EXPECT_OK(root.ToGraphDef(&graph_def));
+  for (auto& node : *graph_def.mutable_node()) {
+    node.set_device("/cpu:0");
+  }
+  SessionOptions sess_options;
+  sess_options.config.mutable_graph_options()->set_build_cost_model(1);
+  std::unique_ptr<Session> session(NewSession(sess_options));
+
+  TF_CHECK_OK(session->Create(graph_def));
+
+  QueueRunnerDef queue_runner_def =
+      BuildQueueRunnerDef(kQueueName, {kEnqueueOp0}, kCloseOp0, kCancelOp0, {});
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  RunOptions run_options;
+  TF_CHECK_OK(qr->StartAndCollectCostGraph(session.get(), run_options));
+
+  // Make sure there was at least one element enqueued in q0: this prevents a
+  // race condition where we close the queue before it was populated.
+  std::vector<Tensor> dq0;
+  TF_EXPECT_OK(session->Run({}, {kDequeueOp0}, {}, &dq0));
+  // Second call to run dequeue op is to make sure the cost graph has been
+  // stored.
+  TF_EXPECT_OK(session->Run({}, {kDequeueOp0}, {}, &dq0));
+
+  CostGraphDef cost_graph;
+  TF_CHECK_OK(qr->ExportCostGraph(&cost_graph));
+  EXPECT_TRUE(cost_graph.node_size() > 0);
+
+  qr->Stop(session.get());
+}
+
+TEST(QueueRunnerTest, NoRunMetaDataTest) {
+  GraphDef graph_def = BuildSimpleGraph();
+  auto session = BuildSessionAndInitVariable(graph_def);
+
+  QueueRunnerDef queue_runner_def = BuildQueueRunnerDef(
+      kQueueName, {kCountUpToOpName}, kSquareOpName, "", {});
+  std::unique_ptr<QueueRunner> qr;
+  TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
+  TF_CHECK_OK(qr->Start(session.get()));
+
+  TF_EXPECT_OK(qr->Join());
+  CostGraphDef cost_graph;
+  EXPECT_EQ(qr->ExportCostGraph(&cost_graph).code(),
+            error::FAILED_PRECONDITION);
 }
 
 }  // namespace

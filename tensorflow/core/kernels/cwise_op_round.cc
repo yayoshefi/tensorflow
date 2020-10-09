@@ -18,7 +18,9 @@ limitations under the License.
 namespace tensorflow {
 REGISTER5(UnaryOp, CPU, "Round", functor::round, Eigen::half, float, double,
           int32, int64);
-#if GOOGLE_CUDA
+
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 REGISTER5(UnaryOp, GPU, "Round", functor::round, Eigen::half, float, double,
           int32, int64);
 #endif

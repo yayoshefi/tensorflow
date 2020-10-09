@@ -16,15 +16,26 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER5(BinaryOp, CPU, "Add", functor::add, float, Eigen::half, double, int32,
-          int64);
-#if GOOGLE_CUDA
+REGISTER6(BinaryOp, CPU, "Add", functor::add, float, Eigen::half, double, int32,
+          int64, bfloat16);
+REGISTER6(BinaryOp, CPU, "AddV2", functor::add, float, Eigen::half, double,
+          int32, int64, bfloat16);
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 REGISTER3(BinaryOp, GPU, "Add", functor::add, float, Eigen::half, double);
+REGISTER3(BinaryOp, GPU, "AddV2", functor::add, float, Eigen::half, double);
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
 // registration requires all int32 inputs and outputs to be in host memory.
 REGISTER_KERNEL_BUILDER(Name("Add")
+                            .Device(DEVICE_GPU)
+                            .HostMemory("x")
+                            .HostMemory("y")
+                            .HostMemory("z")
+                            .TypeConstraint<int32>("T"),
+                        BinaryOp<CPUDevice, functor::add<int32>>);
+REGISTER_KERNEL_BUILDER(Name("AddV2")
                             .Device(DEVICE_GPU)
                             .HostMemory("x")
                             .HostMemory("y")

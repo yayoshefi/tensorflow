@@ -12,17 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-""" Tests for ExtractImagePatches gradient. """
+"""Tests for ExtractImagePatches gradient."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-import tensorflow as tf
+
+from tensorflow.python.framework import constant_op
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import random_seed as random_seed_lib
+from tensorflow.python.framework import test_util
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import gradient_checker
+from tensorflow.python.ops import gradients_impl
+from tensorflow.python.ops import variable_scope
+from tensorflow.python.platform import test
 
 
-class ExtractImagePatchesGradTest(tf.test.TestCase):
+class ExtractImagePatchesGradTest(test.TestCase):
   """Gradient-checking for ExtractImagePatches op."""
 
   _TEST_CASES = [
@@ -70,32 +79,95 @@ class ExtractImagePatchesGradTest(tf.test.TestCase):
       },
   ]
 
+  @test_util.run_deprecated_v1
   def testGradient(self):
     # Set graph seed for determinism.
     random_seed = 42
-    tf.set_random_seed(random_seed)
+    random_seed_lib.set_random_seed(random_seed)
+
+    with self.cached_session():
+      for test_case in self._TEST_CASES:
+        np.random.seed(random_seed)
+        in_shape = test_case['in_shape']
+        in_val = constant_op.constant(
+            np.random.random(in_shape), dtype=dtypes.float32)
+
+        for padding in ['VALID', 'SAME']:
+          out_val = array_ops.extract_image_patches(in_val, test_case['ksizes'],
+                                                    test_case['strides'],
+                                                    test_case['rates'], padding)
+          out_shape = out_val.get_shape().as_list()
+
+          err = gradient_checker.compute_gradient_error(in_val, in_shape,
+                                                        out_val, out_shape)
+          self.assertLess(err, 1e-4)
+
+  @test_util.run_deprecated_v1
+  def testConstructGradientWithLargeImages(self):
+    batch_size = 4
+    height = 1024
+    width = 1024
+    ksize = 5
+    images = variable_scope.get_variable('inputs',
+                                         (batch_size, height, width, 1))
+    patches = array_ops.extract_image_patches(images,
+                                              ksizes=[1, ksize, ksize, 1],
+                                              strides=[1, 1, 1, 1],
+                                              rates=[1, 1, 1, 1],
+                                              padding='SAME')
+    # Github issue: #20146
+    # tf.image.extract_image_patches() gradient very slow at graph construction
+    # time
+    gradients = gradients_impl.gradients(patches, images)
+    # Won't time out.
+    self.assertIsNotNone(gradients)
+
+  def _VariableShapeGradient(self, test_shape_pattern):
+    """Use test_shape_pattern to infer which dimensions are of
+
+    variable size.
+    """
+    # Set graph seed for determinism.
+    random_seed = 42
+    random_seed_lib.set_random_seed(random_seed)
 
     with self.test_session():
       for test_case in self._TEST_CASES:
         np.random.seed(random_seed)
         in_shape = test_case['in_shape']
-        in_val = tf.constant(np.random.random(in_shape),
-                             dtype=tf.float32)
+        test_shape = [
+            x if x is None else y for x, y in zip(test_shape_pattern, in_shape)
+        ]
+        in_val = array_ops.placeholder(shape=test_shape, dtype=dtypes.float32)
 
+        feed_dict = {in_val: np.random.random(in_shape)}
         for padding in ['VALID', 'SAME']:
-          out_val = tf.extract_image_patches(in_val,
-                                             test_case['ksizes'],
-                                             test_case['strides'],
-                                             test_case['rates'],
-                                             padding)
-          out_shape = out_val.get_shape().as_list()
+          out_val = array_ops.extract_image_patches(in_val, test_case['ksizes'],
+                                                    test_case['strides'],
+                                                    test_case['rates'], padding)
+          out_val_tmp = out_val.eval(feed_dict=feed_dict)
+          out_shape = out_val_tmp.shape
 
-          err = tf.test.compute_gradient_error(
-              in_val, in_shape, out_val, out_shape
-          )
-
-          print('extract_image_patches gradient err: %.4e' % err)
+          err = gradient_checker.compute_gradient_error(in_val, in_shape,
+                                                        out_val, out_shape)
           self.assertLess(err, 1e-4)
 
+  @test_util.run_deprecated_v1
+  def test_BxxC_Gradient(self):
+    self._VariableShapeGradient([-1, None, None, -1])
+
+  @test_util.run_deprecated_v1
+  def test_xHWx_Gradient(self):
+    self._VariableShapeGradient([None, -1, -1, None])
+
+  @test_util.run_deprecated_v1
+  def test_BHWC_Gradient(self):
+    self._VariableShapeGradient([-1, -1, -1, -1])
+
+  @test_util.run_deprecated_v1
+  def test_AllNone_Gradient(self):
+    self._VariableShapeGradient([None, None, None, None])
+
+
 if __name__ == '__main__':
-  tf.test.main()
+  test.main()

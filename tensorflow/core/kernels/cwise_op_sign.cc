@@ -16,9 +16,9 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER7(UnaryOp, CPU, "Sign", functor::sign, float, double, int32, int64,
-          complex64, Eigen::half, complex128);
-#if GOOGLE_CUDA
+REGISTER8(UnaryOp, CPU, "Sign", functor::sign, float, double, int32, int64,
+          complex64, Eigen::half, bfloat16, complex128);
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 REGISTER6(UnaryOp, GPU, "Sign", functor::sign, float, Eigen::half, double,
           int64, complex64, complex128);
 
@@ -32,5 +32,6 @@ REGISTER_KERNEL_BUILDER(Name("Sign")
                             .TypeConstraint<int32>("T"),
                         UnaryOp<CPUDevice, functor::sign<int32>>);
 #endif
+
 
 }  // namespace tensorflow

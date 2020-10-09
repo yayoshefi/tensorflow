@@ -18,11 +18,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/allocator.h"
-#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/graph/testlib.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
@@ -63,10 +63,14 @@ static void SliceHelper(int iters, int size) {
                   .Input(test::graph::Constant(g, sizes))
                   .Attr("T", dt)
                   .Finalize(g, &node));
+  FixupSourceAndSinkEdges(g);
 
   testing::BytesProcessed(static_cast<int64>(iters) * kDim * size * sizeof(T));
   testing::StartTiming();
-  test::Benchmark("cpu", g).Run(iters);
+  test::Benchmark("cpu", g, nullptr, nullptr, nullptr,
+                  "SINGLE_THREADED_EXECUTOR")
+      .Run(iters);
+
   testing::UseRealTime();
 }
 

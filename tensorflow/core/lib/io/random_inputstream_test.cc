@@ -26,11 +26,11 @@ namespace {
 TEST(RandomInputStream, ReadNBytes) {
   Env* env = Env::Default();
   string fname = testing::TmpDir() + "/random_inputbuffer_test";
-  WriteStringToFile(env, fname, "0123456789");
+  TF_ASSERT_OK(WriteStringToFile(env, fname, "0123456789"));
 
   std::unique_ptr<RandomAccessFile> file;
   TF_ASSERT_OK(env->NewRandomAccessFile(fname, &file));
-  string read;
+  tstring read;
   RandomAccessInputStream in(file.get());
   TF_ASSERT_OK(in.ReadNBytes(3, &read));
   EXPECT_EQ(read, "012");
@@ -55,11 +55,11 @@ TEST(RandomInputStream, ReadNBytes) {
 TEST(RandomInputStream, SkipNBytes) {
   Env* env = Env::Default();
   string fname = testing::TmpDir() + "/random_inputbuffer_test";
-  WriteStringToFile(env, fname, "0123456789");
+  TF_ASSERT_OK(WriteStringToFile(env, fname, "0123456789"));
 
   std::unique_ptr<RandomAccessFile> file;
   TF_ASSERT_OK(env->NewRandomAccessFile(fname, &file));
-  string read;
+  tstring read;
   RandomAccessInputStream in(file.get());
   TF_ASSERT_OK(in.SkipNBytes(3));
   EXPECT_EQ(3, in.Tell());
@@ -86,11 +86,11 @@ TEST(RandomInputStream, SkipNBytes) {
 TEST(RandomInputStream, Seek) {
   Env* env = Env::Default();
   string fname = testing::TmpDir() + "/random_inputbuffer_seek_test";
-  WriteStringToFile(env, fname, "0123456789");
+  TF_ASSERT_OK(WriteStringToFile(env, fname, "0123456789"));
 
   std::unique_ptr<RandomAccessFile> file;
   TF_ASSERT_OK(env->NewRandomAccessFile(fname, &file));
-  string read;
+  tstring read;
   RandomAccessInputStream in(file.get());
 
   // Seek forward

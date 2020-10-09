@@ -21,9 +21,11 @@ or that should be permanently associated with the training session.
 
 You can use this just like the logging module:
 
->>> tensorboard_logging.set_summary_writer(summary_writer)
->>> tensorboard_logging.info("my %s", "message")
->>> tensorboard_logging.log(tensorboard_logging.WARN, "something")
+```
+tensorboard_logging.set_summary_writer(summary_writer)
+tensorboard_logging.info("my %s", "message")
+tensorboard_logging.log(tensorboard_logging.WARN, "something")
+```
 """
 
 from __future__ import absolute_import
@@ -56,7 +58,7 @@ _summary_writer = _sentinel_summary_writer
 # Map from the tensorboard_logging logging enum values to the proto's enum
 # values.
 _LEVEL_PROTO_MAP = {
-    DEBUG: event_pb2.LogMessage.DEBUG,
+    DEBUG: event_pb2.LogMessage.DEBUGGING,
     INFO: event_pb2.LogMessage.INFO,
     WARN: event_pb2.LogMessage.WARN,
     ERROR: event_pb2.LogMessage.ERROR,
